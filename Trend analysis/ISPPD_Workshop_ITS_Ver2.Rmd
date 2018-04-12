@@ -1,0 +1,449 @@
+---
+title: "ISPPD Workshop #2 Evaluating Vaccine Impact using Time Series Data"
+author: "Daniel M. Weinberger (daniel.weinberger@yale.edu) and Kayoko Shioda (kayoko.shioda@yale.edu)"
+date: "Sunday, April 15, 2018"
+output: word_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Set up
+
+First, download "Brazil_acp.csv" and save it in your folder.
+
+Then, run the following section to import the dataset.
+
+```{r}
+# Set working directory
+setwd("C:/Users/dmw63/Dropbox (Personal)/ISPPD workshop") # Please update this line 
+
+# Import the data in a .csv file
+d <- read.csv("Brazil_acp.csv")
+```
+
+Let's explore the dataset a little bit...
+
+```{r}
+# Explore the dataset
+names(d)
+head(d)
+table(d$age_group)
+```
+
+Let's take a look at a date variable. How does it look like? Is it in a right format?
+
+```{r}
+class(d$date) # "factor" --> Need to change it to "date"
+head(d$date) 
+
+# Change the type of the date variable so that R can recognize it as a date variable
+d$date <- as.Date(d$date,format="%m/%d/%Y")
+class(d$date) # Now it's changed to "Date"
+head(d$date) 
+```
+
+Next, let's load packages that we will be using in the following sections.
+
+```{r}
+# Load libraries
+library(MASS)
+library(lubridate)
+# If you do not have these packages installed, please run the following line.
+# Replace "PackageName" with the name of the package you'd like to install.
+#install.packages("PackageName") 
+```
+
+
+
+## Part 1. Visualize the Data
+
+### Part 1-a. J12-18
+
+Make a plot for the time series for all-cause pneumonia hospitalizations (ICD10 code: J12-18) among children <12 months of age.
+
+Sort the dataset by date, and make the same plots for <12 mo and 80+ yo.
+```{r}
+# Sort the dataset by date
+d <- d[order(d$date),]
+
+# <12 mo
+plot(J12_18 ~ date, data=d[d$age_group=="<1",], 
+     type="l", bty="l", col="blue", lwd=2, 
+     ylim=c(0,max(d$J12_18[d$age_group=="<1"])),
+     xlab="Months", ylab="Number of hospitalizations", 
+     main="Monthly number of J12-18, <12 mo")
+      abline(v=as.Date("2010-01-01"), lty=2)
+
+# 80+ yo
+plot(J12_18 ~ date, data=d[d$age_group=="80+",], 
+     type="l", bty="l", col="darkgreen", lwd=2,
+     ylim=c(0,max(d$J12_18[d$age_group=="80+"])),
+     xlab="Months", ylab="Number of hospitalizations", 
+     main="Monthly number of J12-18, 80+ yo")
+    abline(v=as.Date("2010-01-01"), lty=2)
+```
+
+What kind of trend do you see in J12-18 for each age group?
+
+
+### Part 1-b. ACJ_NOJ
+
+Plot the time series for non-respiratory hospitalizations (i.e., ACH_NOJ) for <12 mo and 80+ yo. This variable will be used as an offset for regression models. 
+
+First, to make the following analyses easier, let's subset the datasets into two age groups (<12 mo and 80+ yo).
+
+```{r}
+young <- d[d$age_group=="<1",]
+old <- d[d$age_group=="80+",]
+```
+
+Now let's make plots for ACH_NOJ.
+
+```{r}
+# <12 mo
+plot(ACH_NOJ ~ date, data=young, bty="l", type="l",
+     ylim=c(0,max(old$ACH_NOJ)),
+     xlab="Months", ylab="Number of hospitalizations",
+     col="blue", main="ACH_NOJ, <1 yo")
+ abline(v=as.Date("2010-01-01"), lty=2)
+
+# 80+ yo
+# Version 1 (y axis from zero to the max. number of hospitalizations)
+plot(ACH_NOJ ~ date, data=old, bty="l", type="l",
+     ylim=c(0,max(old$ACH_NOJ)),
+     xlab="Months", ylab="Number of hospitalizations", 
+     col="darkgreen", main="ACH_NOJ, 80+ yo")
+ abline(v=as.Date("2010-01-01"), lty=2)
+# Verson 2 (zoom in)
+plot(ACH_NOJ ~ date, data=old, bty="l", type="l",
+     xlab="Months", ylab="Number of hospitalizations", 
+     col="darkgreen", main="ACH_NOJ, 80+ yo (zoom)")
+ abline(v=as.Date("2010-01-01"), lty=2)
+```
+
+What kind of trend do you see in ACH_NOJ for each age group?
+
+
+
+## Part 2. Negative Binomial Regression
+
+First, we will fit a regession just to the **pre-vaccne** data and will extrapolate the trend to the post-vaccine period to estimate the **counterfactual**. 
+
+Because the outcome is a **COUNT** variable, it is most appropriate to use a log-linked Poisson or negative binomial regression, rather than linear regression.
+
+Due to the over-dispersion present in the data, we will fit a negative binonimal regression.
+
+
+### Part 2-a. Set up
+
+In order to fit a model just to the pre-vaccine period, set the outcome (J12-18) to missing (NA) for the post vaccine period.
+
+NOTE: PCV10 was introduced on Jan 1, 2010 in Brazil.
+
+```{r}
+# Create a new variable J12_18_pre which is NA (missing) in the post-vaccine period.
+# <12 mo
+young$J12_18_pre <- young$J12_18
+young$J12_18_pre[which(young$date>="2010-01-01")] <- NA 
+# 80+
+old$J12_18_pre <- old$J12_18
+old$J12_18_pre[which(old$date>="2010-01-01")] <- NA 
+
+# Check if it was created as we want.
+#data.frame(young$date, young$J12_18, young$J12_18_pre)
+#data.frame(old$date, old$J12_18, old$J12_18_pre)
+```
+
+Next, let's create on offset term for negative binomial regression using ACH_NOJ (in a log scale).
+
+```{r}
+# Create an offset term in a log scale--this is the denominator for the regression.
+young$log_offset <- log(young$ACH_NOJ)
+old$log_offset <- log(old$ACH_NOJ)
+```
+
+We will also create a time index variable to control for a long term linear trend.
+
+```{r}
+# Create a time index variable (1, 2, 3, 4, ..., number of datapoints)
+young$time <- 1:nrow(young)
+old$time <- 1:nrow(old)
+young$month<-as.factor(month(young$date))
+old$month<-as.factor(month(old$date))
+
+```
+
+As the outcome J12-18 shows a clear seasonality, we will adjust for it in the regression model. We can do it in two ways:
+  * Using monthly dummy variables  (We will do this here)
+  * Using harmonic terms (sine, cosine)
+### Part 2-b. Fit a negative binomial model
+
+Fit negative binomial models to the prevaccine data.
+
+```{r}
+NB_yng_s1 <- glm.nb(J12_18_pre ~ time + month         + offset(log_offset), data=young)
+NB_old_s1 <- glm.nb(J12_18_pre ~ time + month         + offset(log_offset), data=old)
+```
+
+Exrapolate the trend to the post-vaccine period and generate the counterfactual for J12-18.
+
+```{r}
+Pred_NB_yng_s1 <- predict(NB_yng_s1, newdata=young, type="response", se.fit=T)
+#Pred_NB_yng_s2 <- predict(NB_yng_s2, newdata=young, type="response", se.fit=T)
+Pred_NB_old_s1 <- predict(NB_old_s1, newdata=old,   type="response", se.fit=T)
+#Pred_NB_old_s2 <- predict(NB_old_s2, newdata=old,   type="response", se.fit=T)
+```
+
+Plot time series for observed J12-18 vs. counterfactual J12-18.
+```{r}
+# <12 mo
+plot(Pred_NB_yng_s1$fit ~ young$date,
+     type="l",col="red", bty="l", lwd=2,
+     ylim=c(0,max(c(young$J12_18, Pred_NB_yng_s1$fit))),
+     ylab="Number of hospitalizations", xlab="Months", 
+     main="Negative binomial model (<12 mo)")
+lines(J12_18 ~ date, data=young, col="black",lwd=2)
+abline(v=as.Date("2010-01-01"),col="darkgrey",lty=2, lwd=2)
+legend(x="bottomleft",legend=c("Observed","Monthly dummy","Harmonics"),
+       col=c("black","red","blue"),lty=c(1,1,1),bty="n")
+
+# 80+ mo
+plot(Pred_NB_old_s1$fit ~ old$date,
+     type="l",col="red", bty="l", lwd=2,
+     ylim=c(0,max(c(old$J12_18, Pred_NB_old_s1$fit))),
+     ylab="Number of hospitalizations", xlab="Months", 
+     main="Negative binomial model (80+ yo)")
+lines(J12_18 ~ date, data=old, col="black",lwd=2)
+abline(v=as.Date("2010-01-01"),col="darkgrey",lty=2, lwd=2)
+legend(x="bottomleft",legend=c("Observed","Monthly dummy","Harmonics"),
+       col=c("black","red","blue"),lty=c(1,1,1),bty="n")
+```
+
+
+### Part 2-c. Rate ratios (RRs)
+
+Calculate the rate ratios (RRs)
+
+```{r}
+RR_NB_yng <- young$J12_18/Pred_NB_yng_s1$fit
+RR_NB_old <- old$J12_18/Pred_NB_old_s1$fit
+```
+
+Plot RRs by time.
+```{r}
+# <12 mo
+plot(RR_NB_yng ~ young$date, type="l", bty="l", col="red",
+     main="RR for <12 mo", xlab="Months", ylab="Estimated RR", ylim=c(0.5,1.5))
+abline(h=1,col="darkgrey",lty=2)
+abline(v=as.Date("2010-01-01"),col="darkgrey",lty=2)
+# 80+ yo
+plot(RR_NB_old ~ old$date, type="l", bty="l", col="red",
+     main="RR for 80+ years", xlab="Months", ylab="Estimated RR", ylim=c(0.5,1.5))
+abline(h=1,col="darkgrey",lty=2)
+abline(v=as.Date("2010-01-01"),col="darkgrey",lty=2)
+```
+
+
+### Part 2-e. Leave-one-season-out analysis
+
+As a sensitivity analysis, we can fit a series of negative binomial models by excluding one season at a time. 
+
+For example, the 1st model will be fit to the pre-vaccine data excluding the first year of the pre-vaccine period; the 2nd model will be fit to the pre-vaccine data excluding the second year... 
+
+There are 6 years of pre-vaccine data, so we will fit 6 models.
+
+Let's start with the young age group.
+
+```{r}
+# First, let's create an empty matrix to store results.
+lvso_yng <- matrix(NA, nrow=nrow(young), ncol=6)
+for (i in 1:6) {
+  
+  # 1. Create J12_18_pre as before
+  young$J12_18_pre <- young$J12_18
+  young$J12_18_pre[which(young$date>="2010-01-01")] <- NA 
+  
+  # 2. Exclude one season from the pre-vaccine period
+  k <- (12*(i-1)+1):(12*(i-1)+12)
+  young$J12_18_pre[k] <- NA 
+  
+  # 3. Fit a negative binomial model
+  NB_yng_lvso <- glm.nb(J12_18_pre ~ time+month+offset(log_offset), data=young)
+
+  # 4. Extrapolate a trend to the post-vaccine period
+  Pred_NB_yng_lvso <- predict(NB_yng_lvso, newdata=young, type="response", se.fit=T)
+  
+  # 5. Save a result in a matrix
+  lvso_yng[,i] <- Pred_NB_yng_lvso$fit
+}
+```
+
+Plot observed vs. counterfactual.
+
+```{r}
+plot(J12_18 ~ date, data = young,
+     type="l",col="black", bty="l", lwd=2,
+     ylim=c(0,max(c(young$J12_18))),
+     ylab="Number of hospitalizations", xlab="Months", 
+     main="Negative binomial model (<12 mo)")
+lines(lvso_yng[,i] ~ young$date, data=young, col="red")
+col <- c("blue","orange","darkgreen","purple","darkgrey")
+for (i in 2:6) {
+  lines(lvso_yng[,i] ~ date, data=young, col=col[i],lwd=2)
+}
+abline(v=as.Date("2010-01-01"),col="darkgrey",lty=2, lwd=2)
+```
+
+Calculate and plot RRs.
+
+```{r}
+RR_lvso_yng <- young$J12_18/lvso_yng
+plot(RR_lvso_yng[,1] ~ young$date, type="l", bty="l", col="red",
+     main="RR for <12 mo", xlab="Months", ylab="Estimated RR", ylim=c(0.5,1.5))
+for (i in 2:6) {
+  lines(RR_lvso_yng[,i] ~ date, data=young, col=col[i],lwd=2)
+}
+abline(h=1,col="darkgrey",lty=2)
+abline(v=as.Date("2010-01-01"),col="darkgrey",lty=2)
+```
+
+
+
+
+## Part 3. Interrupted Time Series Analysis
+
+In this section, we compare a simple univariate linear regression with interupted time series regressions where we test whether the slope of the line changes after vaccine introduction.
+
+### Part 3-a. Set up
+
+First, let's create the following dummy variables for the post-vaccine period.
+   * period1: 1 if 1-12 months after PCV10 introduction
+   * period2: 1 if >12 months after PCV10 introduction
+
+```{r}
+# <12 mo
+young$period1 <- 0
+young$period2 <- 0
+young$period1[young$date>="2010-01-01" & young$date<"2011-01-01"] <- 1
+young$period2[young$date>="2011-01-01"] <- 1
+# 80+ yo
+old$period1 <- 0
+old$period2 <- 0
+old$period1[old$date>="2010-01-01" & old$date<"2011-01-01"] <- 1
+old$period2[old$date>="2011-01-01"] <- 1
+```
+
+
+### Part 3-b. Fit 3 models
+
+Fit an interrupted time series model as follows.
+
+```{r}
+ITS_yng <- glm.nb(J12_18 ~ month + time*period1 + time*period2, data=young)
+ITS_old <- glm.nb(J12_18 ~ month + time*period1 + time*period2, data=old)
+```
+
+NOTE: This model includes time, period1, and period2 althouth these terms are not explicitly written in the code above. 
+
+
+### Part 3-c. Plot fitted values
+
+Calculate fitted values.
+
+```{r}
+Pred_ITS_yng <- predict(ITS_yng, newdata=young, type="response", se.fit=T)
+Pred_ITS_old <- predict(ITS_old, newdata=old,   type="response", se.fit=T)
+```
+
+Make plots for the observed vs. fitted.
+
+```{r}
+# <12 mo
+plot(Pred_ITS_yng$fit ~ young$date,
+     type="l",col="red", bty="l", lwd=2,
+     ylim=c(0,max(young$J12_18)),
+     ylab="Number of hospitalizations", xlab="Months", 
+     main="Interrupted Time Series Model (<12 mo)")
+lines(J12_18 ~ date, data=young, col="black",lwd=2)
+abline(v=as.Date("2010-01-01"),col="darkgrey",lty=2, lwd=2)
+abline(v=as.Date("2011-01-01"),col="darkgrey",lty=2, lwd=2)
+legend("bottomleft", legend=c("Observed","ITS"),col=c("black","red"),lty=c(1,1),bty="n")
+
+# 80+ yo
+plot(Pred_ITS_old$fit ~ young$date,
+     type="l",col="red", bty="l", lwd=2,
+     ylim=c(0,max(old$J12_18)),
+     ylab="Number of hospitalizations", xlab="Months", 
+     main="Interrupted Time Series Model (80 yo)")
+lines(J12_18 ~ date, data=old, col="black",lwd=2)
+abline(v=as.Date("2010-01-01"),col="darkgrey",lty=2, lwd=2)
+abline(v=as.Date("2011-01-01"),col="darkgrey",lty=2, lwd=2)
+legend("bottomright", legend=c("Observed","ITS"),col=c("black","red"),lty=c(1,1),bty="n")
+```
+
+
+### Part 3-d. Generate counterfactual and estimate the impact of PCV10
+
+Calculate the counterfactual which is the number of cases expected without PCV10. In this case, that's the following part of the model:
+
+$$ 
+\beta_0 + \beta_1*time + \beta_2*sin12+\beta_3*cos12
+$$
+
+```{r}
+# < 12mo
+#cf_yng <-exp(ITS_yng$coef[1] + ITS_yng$coef[2]*young$sin12 + ITS_yng$coef[3]*young$cos12 + ITS_yng$coef[4]*young$time)
+cf_yng<- Pred_ITS_yng$fit / exp(young$period1*ITS_yng$coef['period1'] + young$period2*ITS_yng$coef['period2'] 
+                                +young$period1*young$time*ITS_yng$coef['time:period1'] 
+                                +young$period2*young$time*ITS_yng$coef['time:period2'] )
+# 80+ yo
+cf_old<- Pred_ITS_old$fit / exp(old$period1*ITS_old$coef['period1'] +old$period2*ITS_old$coef['period2'] 
+                                +old$period1*old$time*ITS_old$coef['time:period1'] 
+                                +old$period2*old$time*ITS_old$coef['time:period2'] )
+```
+
+Calculate and plot the number of cases averted.
+
+```{r}
+# First, let's reformat ITS_###3$fit as follows:
+str(Pred_ITS_yng$fit) # It is a "named number", so let's unmane them
+Pred_ITS_yng <- unname(Pred_ITS_yng$fit)
+Pred_ITS_old <- unname(Pred_ITS_old$fit)
+
+# Calculate the number of cases we averted using our intervention
+casesaverted_yng <- Pred_ITS_yng - cf_yng
+casesaverted_old <- Pred_ITS_old - cf_old
+
+# Plot
+plot(casesaverted_yng, col="orange", main="Cases averted, <12 mo", pch=16)
+abline(v=73, col="darkgrey", lty=2)
+abline(v=85, col="darkgrey", lty=2)
+plot(casesaverted_old, col="orange", main="Cases averted, 80+ yo", pch=16)
+abline(v=73, col="darkgrey", lty=2)
+abline(v=85, col="darkgrey", lty=2)
+```
+
+What about the change in rate?
+
+```{r}
+# <12 mo
+RR_yng <- Pred_ITS_yng/cf_yng
+plot(RR_yng, type="l", col="blue", lwd=2, main="Rate ratio, <12 mo",
+     xlab="Months",ylab="Estimated RR", ylim=c(0.5, 1.5))
+abline(v=73, col="darkgrey", lty=2)
+abline(v=85, col="darkgrey", lty=2)
+abline(h=1, col='gray', lty=2)
+# 80+
+RR_old <- Pred_ITS_old/cf_old
+plot(RR_old, type="l", col="blue", lwd=2, main="Rate ratio, 80+ yo",
+     xlab="Months",ylab="Estimated RR", ylim=c(0.5, 1.5))
+abline(v=73, col="darkgrey", lty=2)
+abline(v=85, col="darkgrey", lty=2)
+abline(h=1, col='gray', lty=2)
+
+```
+
+
+Thank you for your participation! Please feel free to contact us anytime if you have any questions! Daniel M. Weinberger (daniel.weinberger@yale.edu) and Kayoko Shioda (kayoko.shioda@yale.edu)
