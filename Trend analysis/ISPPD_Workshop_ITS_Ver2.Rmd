@@ -17,7 +17,7 @@ Then, run the following section to import the dataset.
 
 ```{r}
 # Set working directory
-setwd("C:/Users/dmw63/Dropbox (Personal)/ISPPD workshop") # Please update this line 
+setwd("CHANGE WORKING DIRECTORY HERE TO POINT TO FILE WHERE Brazil_acp.csv IS SAVED") # Please update this line 
 
 # Import the data in a .csv file
 d <- read.csv("Brazil_acp.csv")
